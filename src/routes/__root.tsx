@@ -121,7 +121,14 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   useEffect(() => {
-    useStore.persist.rehydrate();
+    const hydrateAndFetch = async () => {
+      await useStore.persist.rehydrate();
+      const state = useStore.getState();
+      if (state.user) {
+        await state.fetchInitialData();
+      }
+    };
+    hydrateAndFetch();
   }, []);
 
   return (
