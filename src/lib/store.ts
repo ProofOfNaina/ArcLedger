@@ -100,69 +100,83 @@ export const useStore = create<State>()(
       transactions: [],
       notifications: [],
       loginMerchantWithPrivy: async (profile) => {
-        // 1. Check local state
-        let merchant = get().merchants.find((m) => m.privyUserId === profile.privyUserId);
-        let created = false;
+        try {
+          // 1. Check local state
+          let merchant = get().merchants.find((m) => m.privyUserId === profile.privyUserId);
+          let created = false;
 
-        // 2. Check/Sync with Supabase
-        const { data: dbMerchant } = await supabase
-          .from("merchants")
-          .select("*")
-          .eq("privy_user_id", profile.privyUserId)
-          .single();
+          // 2. Check/Sync with Supabase
+          const { data: dbMerchant, error: fetchError } = await supabase
+            .from("merchants")
+            .select("*")
+            .eq("privy_user_id", profile.privyUserId)
+            .single();
 
-        if (dbMerchant) {
-          // Map DB snake_case to local camelCase
-          merchant = {
-            id: dbMerchant.id,
-            privyUserId: dbMerchant.privy_user_id,
-            walletAddress: dbMerchant.wallet_address,
-            email: dbMerchant.email,
-            businessName: dbMerchant.business_name,
-            createdAt: new Date(dbMerchant.created_at).getTime(),
-          };
-          // Update local cache if different
-          if (!get().merchants.find(m => m.id === merchant!.id)) {
+          if (fetchError && fetchError.code !== 'PGRST116') {
+            console.error("Supabase fetch error:", fetchError);
+          }
+
+          if (dbMerchant) {
+            // Map DB snake_case to local camelCase
+            merchant = {
+              id: dbMerchant.id,
+              privyUserId: dbMerchant.privy_user_id,
+              walletAddress: dbMerchant.wallet_address,
+              email: dbMerchant.email,
+              businessName: dbMerchant.business_name,
+              createdAt: new Date(dbMerchant.created_at).getTime(),
+            };
+            // Update local cache if different
+            if (!get().merchants.find(m => m.id === merchant!.id)) {
+              set({ merchants: [merchant, ...get().merchants] });
+            }
+          } else if (!merchant) {
+            // Create new
+            const newId = rid();
+            const newMerchant: Merchant = {
+              id: newId,
+              privyUserId: profile.privyUserId,
+              walletAddress: profile.walletAddress,
+              email: profile.email,
+              businessName: profile.displayName || profile.email?.split("@")[0] || "My Shop",
+              createdAt: Date.now(),
+            };
+
+            const { error: insertError } = await supabase.from("merchants").insert({
+              id: newId,
+              privy_user_id: profile.privyUserId,
+              wallet_address: profile.walletAddress,
+              email: profile.email,
+              business_name: newMerchant.businessName,
+            });
+
+            if (insertError) {
+              console.error("Supabase insert error:", insertError);
+            }
+
+            merchant = newMerchant;
+            created = true;
             set({ merchants: [merchant, ...get().merchants] });
           }
-        } else if (!merchant) {
-          // Create new
-          const newId = rid();
-          const newMerchant: Merchant = {
-            id: newId,
-            privyUserId: profile.privyUserId,
-            walletAddress: profile.walletAddress,
-            email: profile.email,
-            businessName: profile.displayName || profile.email?.split("@")[0] || "My Shop",
-            createdAt: Date.now(),
+
+          const user: SessionUser = {
+            id: merchant!.id,
+            role: "merchant",
+            walletAddress: merchant!.walletAddress,
+            email: merchant!.email,
+            displayName: merchant!.businessName,
           };
-
-          await supabase.from("merchants").insert({
-            id: newId,
-            privy_user_id: profile.privyUserId,
-            wallet_address: profile.walletAddress,
-            email: profile.email,
-            business_name: newMerchant.businessName,
-          });
-
-          merchant = newMerchant;
-          created = true;
-          set({ merchants: [merchant, ...get().merchants] });
+          set({ user });
+          
+          // Fetch data for this merchant
+          await get().fetchInitialData();
+          
+          return { user, merchant: merchant!, created };
+        } catch (error) {
+          console.error("Login error:", error);
+          // Still allow login to proceed with local state if possible, or throw a clearer error
+          throw error;
         }
-
-        const user: SessionUser = {
-          id: merchant!.id,
-          role: "merchant",
-          walletAddress: merchant!.walletAddress,
-          email: merchant!.email,
-          displayName: merchant!.businessName,
-        };
-        set({ user });
-        
-        // Fetch data for this merchant
-        await get().fetchInitialData();
-        
-        return { user, merchant: merchant!, created };
       },
       loginAsCustomerWallet: (walletAddress) => {
         const customer = get().customers.find(
@@ -180,72 +194,82 @@ export const useStore = create<State>()(
       },
       logout: () => set({ user: null }),
       fetchInitialData: async () => {
-        const user = get().user;
-        if (!user) return;
+        try {
+          const user = get().user;
+          if (!user) return;
 
-        if (user.role === "merchant") {
-          // Fetch customers for this merchant
-          const { data: customers } = await supabase
-            .from("customers")
-            .select("*")
-            .eq("merchant_id", user.id);
-          
-          if (customers) {
-            set({
-              customers: customers.map((c) => ({
-                id: c.id,
-                merchantId: c.merchant_id,
-                name: c.name,
-                walletAddress: c.wallet_address,
-                phone: c.phone,
-                createdAt: new Date(c.created_at).getTime(),
-              })),
-            });
-          }
+          if (user.role === "merchant") {
+            // Fetch customers for this merchant
+            const { data: customers, error: customerError } = await supabase
+              .from("customers")
+              .select("*")
+              .eq("merchant_id", user.id);
+            
+            if (customerError) console.error("Error fetching customers:", customerError);
+            
+            if (customers) {
+              set({
+                customers: customers.map((c) => ({
+                  id: c.id,
+                  merchantId: c.merchant_id,
+                  name: c.name,
+                  walletAddress: c.wallet_address,
+                  phone: c.phone,
+                  createdAt: new Date(c.created_at).getTime(),
+                })),
+              });
+            }
 
-          // Fetch transactions for these customers
-          const { data: transactions } = await supabase
-            .from("transactions")
-            .select("*")
-            .eq("merchant_id", user.id);
-          
-          if (transactions) {
-            set({
-              transactions: transactions.map((t) => ({
-                id: t.id,
-                customerId: t.customer_id,
-                merchantId: t.merchant_id,
-                amount: Number(t.amount),
-                type: t.type,
-                status: t.status,
-                notes: t.notes,
-                txHash: t.tx_hash,
-                timestamp: new Date(t.timestamp).getTime(),
-              })),
-            });
+            // Fetch transactions for these customers
+            const { data: transactions, error: txError } = await supabase
+              .from("transactions")
+              .select("*")
+              .eq("merchant_id", user.id);
+            
+            if (txError) console.error("Error fetching transactions:", txError);
+            
+            if (transactions) {
+              set({
+                transactions: transactions.map((t) => ({
+                  id: t.id,
+                  customerId: t.customer_id,
+                  merchantId: t.merchant_id,
+                  amount: Number(t.amount),
+                  type: t.type,
+                  status: t.status,
+                  notes: t.notes,
+                  txHash: t.tx_hash,
+                  timestamp: new Date(t.timestamp).getTime(),
+                })),
+              });
+            }
+          } else {
+            // Customer role: Fetch their specific data
+            const { data: transactions, error: txError } = await supabase
+              .from("transactions")
+              .select("*")
+              .eq("customer_id", user.id);
+            
+            if (txError) console.error("Error fetching transactions:", txError);
+            
+            if (transactions) {
+              set({
+                transactions: transactions.map((t) => ({
+                  id: t.id,
+                  customerId: t.customer_id,
+                  merchantId: t.merchant_id,
+                  amount: Number(t.amount),
+                  type: t.type,
+                  status: t.status,
+                  notes: t.notes,
+                  txHash: t.tx_hash,
+                  timestamp: new Date(t.timestamp).getTime(),
+                })),
+              });
+            }
           }
-        } else {
-          // Customer role: Fetch their specific data
-          const { data: transactions } = await supabase
-            .from("transactions")
-            .select("*")
-            .eq("customer_id", user.id);
-          
-          if (transactions) {
-            set({
-              transactions: transactions.map((t) => ({
-                id: t.id,
-                customerId: t.customer_id,
-                merchantId: t.merchant_id,
-                amount: Number(t.amount),
-                type: t.type,
-                status: t.status,
-                notes: t.notes,
-                txHash: t.tx_hash,
-                timestamp: new Date(t.timestamp).getTime(),
-              })),
-            });
-          }
+        } catch (error) {
+          console.error("fetchInitialData error:", error);
         }
       },
       addCustomer: async (input) => {
