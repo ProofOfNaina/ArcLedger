@@ -29,16 +29,24 @@ function LoginPage() {
   useEffect(() => {
     if (!privy.ready || !privy.user || sessionUser) return;
     
-    const profile = shopName.trim() ? { ...privy.user, displayName: shopName.trim() } : privy.user;
-    const { merchant, created } = loginMerchantWithPrivy(profile);
-    if (created) {
-      toast.success(`Welcome to ArcLedger, ${merchant.businessName}`, {
-        description: `Wallet ${merchant.walletAddress.slice(0, 10)}…`,
-      });
-    } else {
-      toast.success(`Welcome back, ${merchant.businessName}`);
-    }
-    navigate({ to: "/merchant" });
+    const finishLogin = async () => {
+      const profile = shopName.trim() ? { ...privy.user, displayName: shopName.trim() } : privy.user;
+      try {
+        const { merchant, created } = await loginMerchantWithPrivy(profile);
+        if (created) {
+          toast.success(`Welcome to ArcLedger, ${merchant.businessName}`, {
+            description: `Wallet ${merchant.walletAddress.slice(0, 10)}…`,
+          });
+        } else {
+          toast.success(`Welcome back, ${merchant.businessName}`);
+        }
+        navigate({ to: "/merchant" });
+      } catch (error) {
+        console.error("Login component error:", error);
+      }
+    };
+
+    finishLogin();
   }, [privy.ready, privy.user, sessionUser, loginMerchantWithPrivy, navigate]);
 
   const handleLogin = () => {
